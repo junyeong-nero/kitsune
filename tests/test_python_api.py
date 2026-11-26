@@ -390,6 +390,32 @@ class BrowserRequestTests(BridgeTestCase):
         self.assertEqual(self.bridge.last.body, {"call": 42, "resume_token": "token", "observed": {"1": "applied"}})
         self.assertEqual(self.browser.workflows(), ["test"])
 
+    def test_parallel_returns_the_sequences_and_takes_tab_method_names(self):
+        # #669: wap-247 learned pageText from an error and found the text at results[0][seq][step].
+        read, failed = {"text": "Page 1"}, {"error": "Timed out", "code": "timeout", "retryable": True}
+        self.reply("/api/batch", {"results": [[[{"ok": True}, read], [failed, {"text": ""}]]],
+                                   "progress": [{"action": "parallel"}], "status": "failed", "summary": "..."})
+        result = self.browser.parallel([[{"action": "navigate", "url": "/1", "tabId": 7}, {"action": "text", "tabId": 7}],
+                                        [{"action": "back", "tabId": 8}, {"action": "info", "tabId": 8}]])
+        self.assertEqual(result["results"], [[{"ok": True}, read], [failed, {"text": ""}]])
+        self.assertEqual((result["results"][0][1]["text"], result["status"]), ("Page 1", "failed"))
+        self.assertEqual([[step["action"] for step in sequence]
+                          for sequence in self.bridge.last.body["commands"][0]["sequences"]],
+                         [["navigate", "pageText"], ["goBack", "pageInfo"]])
+
+        refused = {"error": "Sequence 0: \"click\" inside parallel requires explicit tabId", "code": "tab_required",
+                   "retryable": True}
+        self.reply("/api/batch", {"results": [refused], "progress": [], "status": "failed"})
+        with self.assertRaises(kitsune.KitsuneError) as raised:
+            self.browser.parallel([[{"action": "click", "selector": "#a"}]])
+        self.assertEqual(raised.exception.code, "tab_required")
+
+    def test_parallel_help_shows_an_example_and_the_result_shape(self):
+        doc = Browser.parallel.__doc__
+        for shown in ("browser.parallel([[{'action': 'navigate'", "{'action': 'text'", "r['results'][seq][step]",
+                      "does not raise", "'error'"):
+            self.assertIn(shown, doc)
+
     def test_cookies_history_and_bookmarks(self):
         self.assertEqual(self.browser.cookies.get(domain="example.com"), [{"name": "sid"}])
         self.assertEqual(self.bridge.last.body, {"op": "get", "domain": "example.com"})

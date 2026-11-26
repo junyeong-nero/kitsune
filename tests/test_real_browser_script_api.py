@@ -2,15 +2,18 @@
 signature help, positional query fields, coded failures, and check on ARIA checkboxes."""
 import asyncio
 from http.server import BaseHTTPRequestHandler
+import inspect
 import json
 import re
 import sys
+import textwrap
 import time
 import unittest
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from kitsune.browser import Browser
 import real_browser_harness as harness
 
 PAGE = """<!doctype html><title>Settings</title>
@@ -205,6 +208,30 @@ class RealBrowserScriptApiTests(harness.RealBrowserTestCase):
         dark = self.assert_ok(self.call("/api/check", {"tabId": tab_id, "selector": "#dark", "checked": True}))
         self.assertEqual((dark["checked"], dark["clicked"]), (True, True))
         self.assertEqual(self.checked(tab_id, "#dark"), "true")
+
+    def test_the_parallel_help_example_reads_24_pages_through_4_tabs_as_written(self):
+        # #669: wap-247 needed six calls to learn browser.parallel's action names and result shape.
+        example = textwrap.dedent(re.search(r"\n\n((?: {4}.*\n)+)", inspect.getdoc(Browser.parallel))[1])
+
+        async def run(session, tab_id):
+            code = example.replace("https://example.com", self.site.origin) + "result = [t.id for t in tabs]"
+            reply = await self.script(session, code)
+            for opened in reply["result"]:
+                self.addCleanup(self.call, "/api/close-tab", {"tabId": opened})
+            printed = re.findall(rf"^({re.escape(self.site.origin)}\S*) (.*)$", reply["output"], re.M)
+            self.assertEqual(printed, [(f"{self.site.origin}/?page={n}", "Settings") for n in range(24)], reply)
+
+            # A failed step does not raise, and the rest of its sequence runs.
+            failed = await self.script(session, (
+                f"t = browser.tab({reply['result'][0]})\n"
+                "r = browser.parallel([[{'action': 'click', 'selector': '#missing', 'tabId': t.id, 'timeout': 300},\n"
+                "                       {'action': 'text', 'tabId': t.id}]])\n"
+                "result = [r['results'], r['status']]"))
+            [(click, read)], status = failed["result"]
+            self.assertTrue(click["error"] and click["code"], click)
+            self.assertTrue(read["text"].startswith("Settings"), read)
+            self.assertNotEqual(status, "ok")
+        self.run_scenario(run)
 
 
 if __name__ == "__main__":

@@ -286,6 +286,13 @@ In `browser_run_python`, a script's browser calls run one at a time, also when t
 starts threads: threads on four tabs take as long as one tab (#634). To work on several tabs at
 once, give `browser.parallel` one sequence per tab; in a local measurement, 12 navigations to
 a page answering in 1 s took 13 s with four threads and 3.2 s with `browser.parallel`.
+`help(browser.parallel)` shows a script that reads pages four tabs at a time. Its `results`
+hold one list per sequence, `r['results'][seq][step]`, where `browser.batch` would nest them
+in `results[0]`. A failed step has `error` and does not raise, and the rest of its sequence
+runs; a call refused before any step ran (`tab_required`, `tab_owned`) raises. Steps may name
+`text`, `info`, `back` and `forward` for `pageText`, `pageInfo`, `goBack` and `goForward`
+(#669). A script that only reads, navigates or runs batches and stops at its deadline or call
+limit is told to print or set `result` as it goes.
 
 `browser.keep_alive(tabs)` / `stop_keep_alive()` prevent tab unloading,
 `browser.broadcast(tabs, command)` runs a command in each tab, and

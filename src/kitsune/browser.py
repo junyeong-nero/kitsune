@@ -60,6 +60,16 @@ def _tab_ids(tabs) -> list[int]:
     return [_tab_id(tab) for tab in tabs]
 
 
+# Tab method names a parallel step may use for the batch action of the same read or move (#669).
+_PARALLEL_ACTION_ALIASES = {"text": "pageText", "info": "pageInfo", "back": "goBack", "forward": "goForward"}
+
+
+def _parallel_step(step):
+    if isinstance(step, dict) and step.get("action") in _PARALLEL_ACTION_ALIASES:
+        return {**step, "action": _PARALLEL_ACTION_ALIASES[step["action"]]}
+    return step
+
+
 def _with_confirm(body: dict, confirm: str | None) -> dict:
     """body with the confirm token of an approved action, if any."""
     return {**body, "confirmToken": confirm} if confirm is not None else body
@@ -221,10 +231,36 @@ class Browser:
         return self.request("/api/batch", body, timeout=container_request_seconds(batch_deadline_seconds(commands)))
 
     def parallel(self, sequences: list[list[dict]]) -> dict:
-        """Run command sequences concurrently, one per tab; every command that acts on a tab names its tabId."""
+        """Run command sequences concurrently, one per tab; every command that acts on a tab names its tabId.
+
+        Steps are batch commands (docs/api-reference.md#post-apibatch); text, info, back and
+        forward also name pageText, pageInfo, goBack and goForward. Read 24 pages, 4 at a time:
+
+            urls = [f'https://example.com/?page={n}' for n in range(24)]
+            tabs = [browser.new_tab() for _ in range(4)]
+            for i in range(0, len(urls), 4):
+                r = browser.parallel([[{'action': 'navigate', 'url': u, 'tabId': t.id},
+                                       {'action': 'text', 'tabId': t.id}]
+                                      for t, u in zip(tabs, urls[i:i + 4])])
+                for u, (nav, read) in zip(urls[i:], r['results']):
+                    print(u, nav.get('error') or read.get('error') or read['text'][:100])
+
+        Returns {'results', 'progress', 'status', 'summary'}: r['results'][seq][step] is a step's
+        result, such as {'text': ...} (20,000 characters; 'full': True reads up to 500,000). A
+        failed step does not raise: its result has 'error', mostly with 'code' and 'hint', and the
+        rest of its sequence still runs. status is 'ok' when every step was. A call refused before
+        any step ran (tab_required, tab_owned) or stopped at its deadline raises KitsuneError.
+        """
+        sequences = [[_parallel_step(step) for step in sequence] if isinstance(sequence, list) else sequence
+                     for sequence in sequences]
         command = {"action": "parallel", "sequences": sequences}
-        return self.request("/api/batch", {"commands": [command]},
-                            timeout=container_request_seconds(batch_deadline_seconds([command])))
+        reply = self.request("/api/batch", {"commands": [command]},
+                             timeout=container_request_seconds(batch_deadline_seconds([command])))
+        # The bridge's results hold the one parallel command's: a list per sequence once it ran.
+        ran = reply["results"][0] if reply.get("results") else []
+        if not isinstance(ran, list):
+            raise_for({**reply, **ran})
+        return {**reply, "results": ran}
 
     def workflows(self) -> list[str]:
         """The names of the workflows the bridge ships."""

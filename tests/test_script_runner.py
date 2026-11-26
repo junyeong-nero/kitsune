@@ -945,6 +945,24 @@ class ScriptRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((result["code"], result["output"]), ("script_timeout", "True 0.0\n"), result)
         self.assertIn("Nothing was written", result["hint"])
 
+    async def test_a_parallel_read_loop_at_the_deadline_is_told_to_print_as_it_goes(self):
+        # #669: wap-247 read pages through browser.parallel, printed at the end and got the general hint.
+        client = Client({"/api/batch": {"results": [[[{"ok": True}, {"text": "p"}]]], "status": "ok"}})
+        result = await script_runner.run_python(
+            "rows = []\nwhile True:\n    r = browser.parallel([[{'action': 'navigate', 'url': '/p', 'tabId': 7},\n"
+            "                           {'action': 'text', 'tabId': 7}]])\n"
+            "    rows.append(r['results'][0][1]['text']); time.sleep(0.2)", client, timeout=0.5, tab_id=7)
+        self.assertEqual(result["code"], "script_timeout", result)
+        self.assertIn("print or set result as you go", result["hint"])
+        self.assertIn("do not replay the whole script", result["hint"])
+        self.assertNotIn("Nothing was written", result["hint"], "a batch step may have written")
+
+        mixed = await script_runner.run_python(
+            "tab.click('#a')\nwhile True:\n    browser.parallel([[{'action': 'text', 'tabId': 7}]]); time.sleep(0.2)",
+            client, timeout=0.5, tab_id=7)
+        self.assertEqual(mixed["code"], "script_timeout", mixed)
+        self.assertNotIn("as you go", mixed["hint"], "a direct write keeps the general hint")
+
     async def test_a_limit_after_a_write_keeps_the_replay_warning(self):
         with patch.object(script_runner, "OPERATION_LIMIT", 1):
             result = await script_runner.run_python("tab.click('#a')\ntab.click('#b')", Client(), tab_id=7)
