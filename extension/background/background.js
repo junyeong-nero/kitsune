@@ -1681,11 +1681,14 @@ async function addRenderingHint(tabId, result) {
     if (!state?.rendering) return;
     result.rendering = true;
     if (state.placeholder) result.placeholder = state.placeholder;
+    // #667: both forms, since the code-first MCP surface and the Python API have no browser_wait_for tool.
     result.rendering_hint = state.placeholder
       ? `The page still shows "${state.placeholder}" and may still be rendering. Wait with ` +
-        `browser_wait_for(text_gone="${state.placeholder}") or for text you expect, then read it.`
+        `browser_wait_for(text_gone="${state.placeholder}"), or tab.wait_for(text_gone="${state.placeholder}") ` +
+        'in a script, or for text you expect, then read it.'
       : 'The page shows no content yet or is marked busy, and may still be rendering. Wait with ' +
-        'browser_wait_for(content=true), then read it; a loaded page can also be empty.';
+        'browser_wait_for(content=true), or tab.wait_for(content=True) in a script, then read it; ' +
+        'a loaded page can also be empty.';
   } catch {}
 }
 

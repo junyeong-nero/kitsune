@@ -160,8 +160,9 @@ async function main() {
   // #631: a page that still renders says so, with the wait to use instead of a sleep.
   for (const [state, extra, hint] of [
     [{ rendering: true, placeholder: 'Loading...' }, { placeholder: 'Loading...' },
-      /still shows "Loading\.\.\.".*browser_wait_for\(text_gone="Loading\.\.\."\)/],
-    [{ rendering: true }, {}, /no content yet or is marked busy.*browser_wait_for\(content=true\)/],
+      /still shows "Loading\.\.\.".*browser_wait_for\(text_gone="Loading\.\.\."\), or tab\.wait_for\(text_gone="Loading\.\.\."\) in a script/],
+    // #667: the script form too, for the code-first surface and the Python API.
+    [{ rendering: true }, {}, /no content yet or is marked busy.*browser_wait_for\(content=true\), or tab\.wait_for\(content=True\) in a script/],
   ]) {
     const h = harness('https://example.com/start', (h, call) => {
       h.update({ status: 'loading', url: call.url });
