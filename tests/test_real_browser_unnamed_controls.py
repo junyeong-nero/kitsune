@@ -4,6 +4,7 @@ Opt-in and built on tests/real_browser_harness.py, which documents how to run it
 fixture is an x-lite-like post whose like, repost and bookmark buttons have no name: one
 posts to its form's action, one carries a data-testid, one shows a sprite icon.
 #653: a selector that reads those states as attributes names the selector that works.
+#670: when exactly one element is what that selector means, the action acts on it.
 """
 import asyncio
 from http.server import BaseHTTPRequestHandler
@@ -27,11 +28,14 @@ PAGE = f"""<!doctype html><meta charset="utf-8"><title>x-lite</title>
   <form method="post" action="/share/t835"><button class="p-2" type="button">{ICON}</button></form>
   <form method="post" action="/follow/u1"><button class="p-2" aria-label="Follow">{ICON}</button></form>
 </article></main>"""
-# #653: the issue's reproduction.
+# #653: the issue's reproduction. #670: two candidates for one action or test id.
 SELECTORS_PAGE = """<!doctype html><meta charset="utf-8"><title>x-lite</title>
 <form action="/bookmark/t833" method=post><button type=submit><svg></svg></button></form>
-<button data-testid="retweet-post-t833"><svg></svg></button>
-<form action="/like/t834?csrf=s3cret" method=post><button type=submit><svg></svg></button></form>"""
+<button data-testid="retweet-post-t833" onclick="this.dataset.clicked=1"><svg></svg></button>
+<form action="/like/t834?csrf=s3cret" method=post><button type=submit><svg></svg></button></form>
+<form action="/follow/u2" method=post><button><svg></svg></button><button><svg></svg></button></form>
+<button data-testid="share-post"><svg></svg></button><button data-testid="share-post"><svg></svg></button>
+<input data-test="search-box">"""
 
 
 class XLiteSite:
@@ -131,10 +135,15 @@ class RealBrowserUnnamedControlTests(harness.RealBrowserTestCase):
                 query = self.call("/api/query", {"tabId": tab, "selector": selector})
                 self.assertEqual(query["items"], [])
                 self.assertTrue(query["hint"].endswith(f"use {working}."), query)
+                self.assertEqual(len(self.call("/api/query", {"tabId": tab, "selector": working})["items"]), 1)
+        # #670: two elements are what the selector means, so the click keeps not_found and the hint.
+        for selector, working in [('button[action="/follow/u2"]', 'form[action="/follow/u2"] button'),
+                                  ('button[testid="share-post"]', 'button[data-testid="share-post"]')]:
+            with self.subTest(selector=selector):
                 clicked = self.call("/api/click", {"tabId": tab, "selector": selector})
                 self.assert_error(clicked, "not_found", True)
                 self.assertIn(f"use {working}.", clicked["hint"])
-                self.assertEqual(len(self.call("/api/query", {"tabId": tab, "selector": working})["items"]), 1)
+        self.assertEqual(self.site.take_posts(0, timeout=0), [])
         # In a script: query warns with the hint, and a failed click carries it.
         def run(code):
             return asyncio.run(script_runner.run_python(code, _SuiteBridge(self.call), tab_id=tab))
@@ -147,11 +156,42 @@ class RealBrowserUnnamedControlTests(harness.RealBrowserTestCase):
         self.assertEqual(warned.get("result"), [[], [
             "Query matched no elements: Snapshots print a control's form action as action, which is the "
             "form's attribute: use form[action=\"/bookmark/t833\"] button."]], warned)
-        stopped = run("tab.click('[testid=\"retweet-post-t833\"]')")
+        stopped = run("tab.click('[testid=\"share-post\"]')")
         self.assert_error(stopped["failed_operation"], "not_found", True)
-        self.assertIn('use [data-testid="retweet-post-t833"].', stopped["failed_operation"]["hint"])
+        self.assertIn('use [data-testid="share-post"].', stopped["failed_operation"]["hint"])
         # A form action that is not on the page has no hint to give.
         self.assertNotIn("hint", self.call("/api/query", {"tabId": tab, "selector": 'button[action="/none"]'}))
+
+    def test_a_selector_reading_action_or_testid_as_an_attribute_acts_on_the_one_it_means(self):
+        # #670: the selector an agent copies from the bookmark button's snapshot line clicks it.
+        tab = self.open_tab(self.site.origin + "/post/t835")
+        snapshot = self.call("/api/snapshot", {"tabId": tab, "text": False})["snapshot"]
+        action = re.search(r'button "" \[ref=\w+\] \[action="([^"]+)"\]', snapshot).group(1)
+        clicked = self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": f'button[action="{action}"]'}))
+        self.assertIs(clicked.get("form_action"), True, clicked)
+        self.assertEqual(self.site.take_posts(1), ["/bookmark/t835"])
+
+        tab = self.open_tab(self.site.origin + "/selectors")
+        for selector in ['button[action="/bookmark/t833"]', '[action="/like/t834"]']:
+            with self.subTest(selector=selector):
+                self.assert_ok(self.call("/api/navigate", {"tabId": tab, "url": self.site.origin + "/selectors",
+                                                           "wait": True}))
+                clicked = self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": selector}))
+                self.assertIs(clicked.get("form_action"), True, clicked)
+                self.assertEqual(self.site.take_posts(1), [re.search(r'"(/[^"]+)"', selector).group(1)])
+        self.assert_ok(self.call("/api/navigate", {"tabId": tab, "url": self.site.origin + "/selectors", "wait": True}))
+        clicked = self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": 'button[testid="retweet-post-t833"]'}))
+        self.assertIs(clicked.get("data_testid"), True, clicked)
+        self.assertEqual(len(self.call("/api/query", {"tabId": tab, "selector": "[data-clicked]"})["items"]), 1)
+        # Every selector-taking action resolves it, not only click; data-test is a test id too.
+        filled = self.assert_ok(self.call("/api/fill", {"tabId": tab, "selector": '[testid="search-box"]',
+                                                         "value": "kitsune"}))
+        self.assertIs(filled.get("data_test"), True, filled)
+        rows = self.call("/api/query", {"tabId": tab, "selector": '[data-test="search-box"]', "fields": ["value"]})
+        self.assertEqual(rows["items"][0]["value"], "kitsune")
+        # A selector that matches keeps its own meaning and reports no fallback.
+        clicked = self.assert_ok(self.call("/api/click", {"tabId": tab, "selector": '[data-testid="retweet-post-t833"]'}))
+        self.assertNotIn("data_testid", clicked)
 
 
 if __name__ == "__main__":
