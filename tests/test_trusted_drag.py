@@ -250,7 +250,8 @@ class UnavailableTests(unittest.TestCase):
         with patch.object(bridge.sys, "platform", "darwin"), patch.dict("sys.modules", {"Quartz": None}):
             self.assertEqual(bridge._mac_drag_unavailable()["code"], "unsupported_platform")
         with patch.object(bridge.sys, "platform", "darwin"), patch.dict("sys.modules", {"Quartz": object()}), \
-             patch.object(bridge, "_mac_accessibility_trusted", return_value=False):
+             patch.object(bridge, "_mac_accessibility_trusted", return_value=False), \
+             patch.object(bridge, "_mac_accessibility_prompt"):
             refused = bridge._mac_drag_unavailable()
         self.assertEqual((refused["code"], refused["retryable"]), ("permission_required", False))
         with patch.object(bridge.sys, "platform", "darwin"), patch.dict("sys.modules", {"Quartz": object()}), \

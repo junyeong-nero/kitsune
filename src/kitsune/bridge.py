@@ -792,6 +792,74 @@ def _mac_accessibility_trusted():
         return None
 
 
+def _mac_responsible_app():
+    """{name, path} of the app macOS checks Accessibility for (this process's responsible
+    process, which may be the terminal, the MCP client or Python.app itself), else None."""
+    try:
+        lib = ctypes.CDLL(None)
+        responsible = lib.responsibility_get_pid_responsible_for_pid  # private, what TCC uses
+        responsible.restype, responsible.argtypes = ctypes.c_int, [ctypes.c_int]
+        lib.proc_pidpath.restype = ctypes.c_int
+        lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+        pid = responsible(os.getpid())
+        buffer = ctypes.create_string_buffer(4096)
+        if pid <= 0 or lib.proc_pidpath(pid, buffer, len(buffer)) <= 0:
+            return None
+    except (OSError, AttributeError):
+        return None
+    path = os.fsdecode(buffer.value)
+    bundle, app, _ = path.partition(".app/")
+    path = bundle + ".app" if app else path
+    return {"name": os.path.basename(bundle if app else path), "path": path}
+
+
+_mac_accessibility_prompted = False
+
+
+def _mac_accessibility_prompt():
+    """Once per bridge: AXIsProcessTrustedWithOptions with the prompt option, so macOS shows its
+    own dialog that opens System Settings and lists the app there."""
+    global _mac_accessibility_prompted
+    if _mac_accessibility_prompted:
+        return
+    _mac_accessibility_prompted = True
+    try:
+        cf = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        ax = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+        keys = (ctypes.c_void_p * 1)(ctypes.c_void_p.in_dll(ax, "kAXTrustedCheckOptionPrompt").value)
+        values = (ctypes.c_void_p * 1)(ctypes.c_void_p.in_dll(cf, "kCFBooleanTrue").value)
+        cf.CFDictionaryCreate.restype = ctypes.c_void_p
+        cf.CFDictionaryCreate.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_long] + [ctypes.c_void_p] * 2
+        options = cf.CFDictionaryCreate(
+            None, keys, values, 1, ctypes.addressof(ctypes.c_byte.in_dll(cf, "kCFTypeDictionaryKeyCallBacks")),
+            ctypes.addressof(ctypes.c_byte.in_dll(cf, "kCFTypeDictionaryValueCallBacks")))
+        if not options:
+            return
+        ax.AXIsProcessTrustedWithOptions.argtypes = [ctypes.c_void_p]
+        ax.AXIsProcessTrustedWithOptions(options)
+        cf.CFRelease.argtypes = [ctypes.c_void_p]
+        cf.CFRelease(options)
+    except (OSError, AttributeError, ValueError):
+        pass
+
+
+def _mac_accessibility_refusal(what, nothing):
+    """The permission_required {error} when the bridge lacks macOS Accessibility permission, else
+    None. It names the app to allow and asks macOS to show its permission prompt."""
+    if _mac_accessibility_trusted() is not False:
+        return None
+    _mac_accessibility_prompt()
+    app = _mac_responsible_app()
+    target = f"{app['name']} ({app['path']})" if app else "the app running the Kitsune bridge"
+    return {"error": f"{what} needs macOS Accessibility permission for {target}; {nothing}",
+            "code": "permission_required", "retryable": False,
+            "state": {"permission": "accessibility", **({"app": app["name"], "app_path": app["path"]} if app else {})},
+            "hint": (f"Only the user can grant it; ask them (browser_ask_user) to turn on {target} in "
+                     "System Settings > Privacy & Security > Accessibility (add it with + if it is not "
+                     "listed), then run kitsune-bridge stop so that the next call restarts the bridge.")}
+
+
 def _cliclick_coord(value):
     # cliclick reads a leading "-" as relative; "=" marks an absolute negative value.
     value = int(round(value))
@@ -903,8 +971,8 @@ def _quartz_warp(Quartz, position):
 
 def _mac_click_screen(x, y, restore_pointer=True, button="left", click_count=1, modifiers=(), hold=0.0):
     # macOS drops posted mouse events from untrusted processes without an error.
-    if _mac_accessibility_trusted() is False:
-        return {"error": f"trustedClick needs macOS Accessibility permission: {_MAC_ACCESSIBILITY_HELP}"}
+    if refusal := _mac_accessibility_refusal("trustedClick", "nothing was clicked"):
+        return refusal
 
     try:
         import Quartz
@@ -1253,10 +1321,7 @@ def _mac_drag_unavailable():
         return {"error": "Trusted drag on macOS needs pyobjc Quartz (run Kitsune with "
                          "uvx --from 'kitsune-browser-mcp[macos]' kitsune); nothing was dragged",
                 "code": "unsupported_platform", "retryable": False}
-    if _mac_accessibility_trusted() is False:
-        return {"error": f"Trusted drag needs macOS Accessibility permission: {_MAC_ACCESSIBILITY_HELP}",
-                "code": "permission_required", "retryable": False}
-    return None
+    return _mac_accessibility_refusal("Trusted drag", "nothing was dragged")
 
 
 def _mac_drag_screen(start, end, steps):
@@ -1456,10 +1521,7 @@ def _mac_keyboard_unavailable():
                          "uvx --from 'kitsune-browser-mcp[macos]' kitsune); nothing was typed",
                 "code": "unsupported_platform", "retryable": False}
     # macOS drops posted events from untrusted processes without an error.
-    if _mac_accessibility_trusted() is False:
-        return {"error": f"Trusted keyboard input needs macOS Accessibility permission: {_MAC_ACCESSIBILITY_HELP}",
-                "code": "permission_required", "retryable": False}
-    return None
+    return _mac_accessibility_refusal("Trusted keyboard input", "nothing was typed")
 
 
 def _mac_frontmost_pid():

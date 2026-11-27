@@ -233,7 +233,8 @@ class TrustedTypeTests(TrustedKeysTestCase):
                 self.assertEqual(KEYBOARD_UNAVAILABLE()["code"], code)
         # pyobjc is there (faked: the check only imports it), the permission is not.
         with patch.dict("sys.modules", {"AppKit": object(), "Quartz": object()}), \
-             patch.object(bridge, "_mac_accessibility_trusted", return_value=False):
+             patch.object(bridge, "_mac_accessibility_trusted", return_value=False), \
+             patch.object(bridge, "_mac_accessibility_prompt"):
             refused = KEYBOARD_UNAVAILABLE()
         with patch.dict("sys.modules", {"AppKit": None}):
             self.assertEqual(KEYBOARD_UNAVAILABLE()["code"], "unsupported_platform")
