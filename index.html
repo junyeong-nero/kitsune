@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kitsune: let your coding agent use the Firefox you already have open</title>
+  <meta name="description" content="Kitsune is an MCP server and browser extension. Claude Code, Codex, Pi and other agents work in background tabs of Firefox, Zen or LibreWolf while the tab in front of you stays yours.">
+  <link rel="canonical" href="https://junyeong-nero.github.io/kitsune/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Kitsune: delegate browser tasks, keep your browser yours">
+  <meta property="og:description" content="An MCP server and browser extension that lets coding agents work in background tabs of Firefox, Zen or LibreWolf.">
+  <meta property="og:url" content="https://junyeong-nero.github.io/kitsune/">
+  <meta property="og:image" content="https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/social-preview.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#f3f5f4">
+  <link rel="icon" href="assets/kitsune-icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Fira+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Zilla+Slab:wght@500;600;700&display=swap">
+  <link rel="stylesheet" href="style.css">
+  <script src="site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<!-- Icons: Material Design Icons (Apache 2.0), Octicons (MIT), Simple Icons (CC0). -->
+<svg hidden>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></symbol>
+  <symbol id="i-forward" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></symbol>
+  <symbol id="i-reload" viewBox="0 0 24 24"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 0 0-8 8 8 8 0 0 0 8 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18a6 6 0 0 1-6-6 6 6 0 0 1 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><path d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M21 7 9 19l-5.5-5.5 1.41-1.41L9 16.17 19.59 5.59z"/></symbol>
+  <symbol id="i-github" viewBox="0 0 16 16"><path d="M8 0c4.42 0 8 3.58 8 8a8.01 8.01 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27s-1.36.09-2 .27c-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8"/></symbol>
+  <symbol id="i-firefox" viewBox="0 0 24 24"><path d="M8.824 7.287c.008 0 .004 0 0 0m-2.8-1.4c.006 0 .003 0 0 0m16.754 2.161c-.505-1.215-1.53-2.528-2.333-2.943.654 1.283 1.033 2.57 1.177 3.53l.002.02c-1.314-3.278-3.544-4.6-5.366-7.477-.091-.147-.184-.292-.273-.446a4 4 0 0 1-.13-.24 2 2 0 0 1-.172-.46.03.03 0 0 0-.027-.03.04.04 0 0 0-.021 0l-.006.001-.01.005.005-.008c-2.585 1.515-3.657 4.168-3.932 5.856a6.2 6.2 0 0 0-2.305.587.297.297 0 0 0-.147.37c.057.162.24.24.396.17a5.6 5.6 0 0 1 2.008-.523l.067-.005a5.9 5.9 0 0 1 1.957.222l.095.03a6 6 0 0 1 .616.228q.12.054.238.112l.107.055a6 6 0 0 1 .368.211 5.95 5.95 0 0 1 2.034 2.104c-.62-.437-1.733-.868-2.803-.681 4.183 2.09 3.06 9.292-2.737 9.02a5.2 5.2 0 0 1-1.513-.292 4.4 4.4 0 0 1-.538-.232c-1.42-.735-2.593-2.121-2.74-3.806 0 0 .537-2 3.845-2 .357 0 1.38-.998 1.398-1.287-.005-.095-2.029-.9-2.817-1.677-.422-.416-.622-.616-.8-.767a4 4 0 0 0-.301-.227 5.4 5.4 0 0 1-.032-2.842c-1.195.544-2.124 1.403-2.8 2.163h-.006c-.46-.584-.428-2.51-.402-2.913-.006-.025-.343.176-.389.206a8.4 8.4 0 0 0-1.136.974q-.596.606-1.085 1.303a9.8 9.8 0 0 0-1.562 3.52c-.003.013-.11.487-.19 1.073q-.02.135-.037.272a8 8 0 0 0-.069.667l-.002.034-.023.387-.001.06C.386 18.795 5.593 24 12.016 24c5.752 0 10.527-4.176 11.463-9.661q.028-.223.052-.448c.232-1.994-.025-4.09-.753-5.844z"/></symbol>
+  <symbol id="i-zen" viewBox="0 0 24 24"><path d="M24 12c0 6.627-5.373 12-12 12S0 18.627 0 12 5.373 0 12 0s12 5.373 12 12m-12 9.846c5.438 0 9.846-4.408 9.846-9.846S17.438 2.154 12 2.154 2.154 6.562 2.154 12 6.562 21.846 12 21.846M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0m-8 6.462a6.462 6.462 0 1 0 0-12.924 6.462 6.462 0 0 0 0 12.924m0-1.847a4.615 4.615 0 1 0 0-9.23 4.615 4.615 0 0 0 0 9.23M15.692 12a3.692 3.692 0 1 1-7.384 0 3.692 3.692 0 0 1 7.384 0"/></symbol>
+  <symbol id="i-librewolf" viewBox="0 0 24 24"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12A12 12 0 0 0 12 0m.03 2.417c2.54 0 4.793.91 6.62 2.672.88.85 1.47 1.654 1.975 2.695.683 1.409.96 2.634.96 4.25 0 2.129-.615 3.985-1.891 5.712a11.6 11.6 0 0 1-1.612 1.695 9.7 9.7 0 0 1-4.774 2.077c-.59.078-1.982.087-2.523.018-1.681-.216-3.289-.886-4.692-1.956-.458-.349-1.316-1.213-1.691-1.702-1.05-1.369-1.703-2.923-1.918-4.566-.092-.703-.092-1.996 0-2.639.464-3.213 2.486-5.968 5.39-7.345 1.35-.64 2.587-.91 4.157-.91m-.032 1.45a7.94 7.94 0 0 0-4.05 1.06c-1.165.657-2.37 1.863-3.03 3.034a8.5 8.5 0 0 0-.981 2.82c-.091.613-.093 1.83-.004 2.417a8.3 8.3 0 0 0 1.27 3.309c.353.531.342.526.653.348.557-.319.702-.473 1.005-1.067.355-.695.734-1.302 1.076-1.723.396-.487.45-.573.648-1.033.1-.231.28-.57.398-.755l.217-.334-.28-.275c-.372-.365-.682-.78-.74-.99-.06-.216.011-.336.29-.498.283-.163.485-.21 1.24-.287.368-.038.767-.107.893-.155.125-.047.498-.251.83-.452.958-.58 1.039-.61 1.613-.598.485.01.486.01.773-.164.603-.364 1.469-1.021 2.607-1.98.219-.183.429-.328.468-.32.16.03.457.757.502 1.231.027.288-.029.573-.2 1.018-.046.122-.067.238-.047.258.049.049.216-.16.216-.27 0-.14.093-.156.219-.038.091.086.17.11.354.11.201 0 .25.02.329.124.133.177.164.661.063.968-.1.298-.4.642-.67.77-.244.114-.736.595-.967.943a11 11 0 0 0-.367.617c-.114.207-.305.518-.425.693-.235.344-.437.823-.631 1.502-.115.398-.124.502-.129 1.391-.006 1.075-.061 1.338-.352 1.669-.33.376-.66 1.202-.687 1.723a4 4 0 0 1-.14.886c-.032.104.027.103.38-.008a8.2 8.2 0 0 0 2.672-1.39c.43-.334 1.172-1.084 1.483-1.497.845-1.12 1.42-2.523 1.588-3.878.082-.653.035-2.034-.09-2.633-.33-1.587-1.039-2.928-2.156-4.076-.697-.715-1.331-1.187-2.148-1.596-1.238-.62-2.3-.872-3.693-.873m1.516 5.314-.696.097-.433.555.696-.098z"/></symbol>
+</svg>
+
+<header class="nav">
+  <div class="wrap nav-row">
+    <a class="brand" href="./">
+      <img src="assets/kitsune-icon.svg" alt="" width="28" height="28">Kitsune
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="docs/">Docs</a>
+      <a href="#benchmark">Benchmark</a>
+      <a href="https://github.com/junyeong-nero/kitsune">GitHub</a>
+    </nav>
+    <a class="btn btn-ink btn-small" href="docs/installation/">Install</a>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="wrap">
+      <h1 id="hero-title">Delegate browser tasks.<br> Keep your browser yours.</h1>
+      <div class="hero-row">
+        <p class="lead">
+          Kitsune is an MCP server and browser extension. Claude Code, Codex, Pi and other agents
+          work in background tabs of the Firefox, Zen or LibreWolf you already use, while the tab in
+          front of you stays yours.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-ink" href="docs/installation/">Install Kitsune</a>
+          <a class="text-link" href="https://github.com/junyeong-nero/kitsune">View source on GitHub</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="wrap stage" data-demo role="region" aria-label="Demo: an agent opens background tabs, then asks for your notes tab">
+      <div class="win browser">
+        <div class="tabs">
+          <div class="tab is-active"><span class="fav fav-notes" aria-hidden="true"></span><span class="tab-title">Desk setup notes</span></div>
+          <div class="tab tab-agent" data-tab="1"><span class="throbber" aria-hidden="true"></span><span class="fav" aria-hidden="true">A</span><span class="tab-title">Alder 75 keyboard</span></div>
+          <div class="tab tab-agent" data-tab="2"><span class="throbber" aria-hidden="true"></span><span class="fav" aria-hidden="true">B</span><span class="tab-title">Birch TKL keyboard</span></div>
+          <div class="tab tab-agent" data-tab="3"><span class="throbber" aria-hidden="true"></span><span class="fav" aria-hidden="true">C</span><span class="tab-title">Cedar 65 keyboard</span></div>
+        </div>
+        <div class="toolbar">
+          <span class="tool" aria-hidden="true"><svg class="icon"><use href="#i-back"/></svg></span>
+          <span class="tool" aria-hidden="true"><svg class="icon"><use href="#i-forward"/></svg></span>
+          <span class="tool" aria-hidden="true"><svg class="icon"><use href="#i-reload"/></svg></span>
+          <span class="url">localhost:4000/notes/desk-setup</span>
+          <button class="ext" type="button" aria-label="Kitsune toolbar popup" aria-expanded="true" aria-controls="demo-popup" data-act="popup">
+            <img src="assets/kitsune-icon.svg" alt="" width="20" height="20">
+            <span class="ext-badge">1</span>
+          </button>
+        </div>
+        <div class="viewport">
+          <div class="notes">
+            <p class="notes-title">Desk setup notes</p>
+            <p>Keyboard shortlist for the new desk. Compare them before ordering on Friday.</p>
+            <ul class="notes-list"><li>Alder 75</li><li>Birch TKL</li><li>Cedar 65</li></ul>
+            <p class="notes-head">Comparison</p>
+            <p class="notes-empty">Nothing here yet.</p>
+            <table class="notes-table" hidden>
+              <thead><tr><th scope="col">Keyboard</th><th scope="col">Layout</th><th scope="col">Switches</th><th scope="col">Price</th></tr></thead>
+              <tbody>
+                <tr><td>Alder 75</td><td>75%</td><td>Hot-swap</td><td>$169</td></tr>
+                <tr><td>Birch TKL</td><td>TKL</td><td>Soldered</td><td>$129</td></tr>
+                <tr><td>Cedar 65</td><td>65%</td><td>Hot-swap</td><td>$149</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="popup" id="demo-popup">
+            <div class="pp-head"><span class="pp-name">Kitsune<span>.</span></span><span class="pp-status">Connected</span></div>
+            <div class="pp-card pp-request">
+              <p class="pp-label">Tab access request</p>
+              <p class="pp-client">Claude Code</p>
+              <p class="pp-title">Desk setup notes</p>
+              <p class="pp-url">localhost:4000/notes/desk-setup</p>
+              <p class="pp-reason">Add the comparison table to your notes.</p>
+              <div class="pp-actions">
+                <button type="button" class="pp-btn pp-quiet" data-act="decline">Decline</button>
+                <button type="button" class="pp-btn" data-act="approve">Approve handoff</button>
+              </div>
+            </div>
+            <div class="pp-card pp-handed" hidden>
+              <p class="pp-label">Handed off</p>
+              <p class="pp-client">Claude Code</p>
+              <p class="pp-title">Desk setup notes</p>
+              <p class="pp-url">localhost:4000/notes/desk-setup</p>
+              <div class="pp-actions"><button type="button" class="pp-btn" data-act="take-back">Take back</button></div>
+            </div>
+            <div class="pp-tabs">
+              <span>Agent tabs</span><span class="pp-count" data-count>3</span>
+            </div>
+            <button type="button" class="pp-btn pp-outline" data-act="close-tabs">Close agent tabs</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="win term" translate="no">
+        <div class="term-bar"><span>claude</span><span>~/desk</span></div>
+        <div class="term-body" aria-live="polite">
+          <p class="t-user">Compare these three keyboards in background tabs, then add a comparison table to my notes.</p>
+          <p class="t-call" data-line="tabs"><b>browser_tabs</b> action=new <span>3 tabs, opened in the background</span></p>
+          <p class="t-call" data-line="read"><b>browser_run_python</b> <span>read specs and prices from the 3 tabs</span></p>
+          <p class="t-call" data-line="request"><b>browser_tabs</b> action=request <span>tab "Desk setup notes": add the comparison table</span></p>
+          <p class="t-note" data-line="wait">Waiting for your answer in the Kitsune popup…</p>
+          <p class="t-note" data-line="approved" hidden>Handoff approved. Added the table to Desk setup notes.</p>
+          <p class="t-note" data-line="declined" hidden>Handoff declined. The comparison stays in this chat.</p>
+          <p class="t-note" data-line="returned" hidden>You took the tab back.</p>
+          <p class="t-note" data-line="closed" hidden>You closed the agent's tabs from the popup.</p>
+          <button type="button" class="t-replay" data-act="replay" hidden>Replay</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="handoff" aria-labelledby="handoff-title">
+    <div class="wrap split">
+      <div class="split-text">
+        <h2 id="handoff-title">Ask for a tab, give it back</h2>
+        <p class="sec-lead">
+          The agent can read every tab. On yours, typing, scrolling, navigation and closing fail until
+          you hand the tab over.
+        </p>
+        <dl class="facts">
+          <div><dt>Request</dt><dd>The agent names the tab and its reason. You answer in the toolbar popup or in your agent’s prompt.</dd></div>
+          <div><dt>Handoff</dt><dd>The tab is the agent’s until you press Take back. It works through the page, and your view stays where it is.</dd></div>
+          <div><dt>Approvals</dt><dd>Tools you check in the extension’s options wait for Allow once, Allow for this session or Decline.</dd></div>
+        </dl>
+        <a class="text-link" href="docs/your-tabs/">Read about your tabs and approvals</a>
+      </div>
+      <div class="split-media">
+        <video autoplay muted loop playsinline preload="metadata" width="800" height="558"
+               poster="assets/demo-handoff-poster.webp"
+               aria-label="Screen recording: Claude Code asks for the user's Wikipedia tab after researching in background tabs; the user approves in Kitsune's toolbar popup, the agent jumps the tab to the right section, and the user takes the tab back and closes the agent's tabs from the popup">
+          <source src="assets/demo-handoff.mp4" type="video/mp4">
+        </video>
+        <button type="button" class="video-toggle" data-act="video" aria-pressed="false">Pause recording</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec sec-tint" id="how" aria-labelledby="how-title">
+    <div class="wrap">
+      <h2 id="how-title">From your agent to your tabs</h2>
+      <p class="sec-lead">Everything runs on your machine. The bridge starts on demand, and several agents share it.</p>
+      <ol class="chain">
+        <li class="chain-node is-agent"><span class="chain-name">Your agent</span><span class="chain-note">Claude Code, Codex, Pi, Cursor, OpenCode or Claude Desktop</span></li>
+        <li class="chain-wire"><code>stdio</code></li>
+        <li class="chain-node"><span class="chain-name">kitsune</span><span class="chain-note">MCP server, one per agent</span></li>
+        <li class="chain-wire"><code>HTTP 127.0.0.1, bearer token</code></li>
+        <li class="chain-node"><span class="chain-name">Bridge</span><span class="chain-note">one per user</span></li>
+        <li class="chain-wire"><code>WebSocket, extension origin</code></li>
+        <li class="chain-node"><span class="chain-name">Extension</span><span class="chain-note">your tabs and the agent’s tabs</span></li>
+      </ol>
+      <dl class="spec">
+        <div>
+          <dt>Browsers</dt>
+          <dd>
+            <span class="browser-names">
+              <span><svg class="icon"><use href="#i-firefox"/></svg>Firefox 142+</span>
+              <span><svg class="icon"><use href="#i-zen"/></svg>Zen 1.23+</span>
+              <span><svg class="icon"><use href="#i-librewolf"/></svg>LibreWolf</span>
+            </span>
+            On macOS, Linux or Windows, with the sessions you are already signed in to.
+          </dd>
+        </div>
+        <div><dt>Tools</dt><dd>Six: <code translate="no">browser_run_python</code> for reads and inputs, plus tabs, screenshots, asking you for help and recovery.</dd></div>
+        <div><dt>Clients</dt><dd>Any MCP client that can run a local server over stdio. <a class="text-link" href="docs/installation/#manual-registration">Manual setup</a></dd></div>
+        <div><dt>Limits</dt><dd>Site-opened popups and OS-level trusted input can still move focus. <a class="text-link" href="docs/api-reference/#shared-browser">Shared-browser limits</a></dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="sec" id="benchmark" aria-labelledby="bench-title">
+    <div class="wrap">
+      <h2 id="bench-title">Compared with Aside, EgoLite and Playwright MCP</h2>
+      <p class="sec-lead">
+        On 26 realistic WebArena-Pro tasks, Kitsune passed as many as Playwright MCP under Claude Code
+        and Codex and used the least input of the four tools: 208 attempts, graded by the sites’
+        backend state and the agent’s answer.
+      </p>
+      <a class="chart" href="docs/benchmark/">
+        <img src="https://raw.githubusercontent.com/junyeong-nero/kitsune/main/assets/benchmark-webarena-pro.svg"
+             width="1200" height="830" loading="lazy"
+             alt="Four-way benchmark, 26 WebArena-Pro tasks, 208 attempts. Passed, Claude Code / Codex: Kitsune 13/26 and 12/26; Playwright MCP 13/26 and 12/26; Aside 12/26 and 12/26; EgoLite 12/26 and 12/26. Mean input tokens per attempt: Kitsune 201k / 414k; Aside 463k / 512k; EgoLite 360k / 622k; Playwright MCP 660k / 809k. Mean tool calls: Kitsune 12.1 / 15.8; Aside 16.1 / 15.6; EgoLite 12.8 / 17.5; Playwright MCP 29.8 / 35.1.">
+      </a>
+      <ul class="bench-notes">
+        <li>On the tasks every tool passed, Kitsune used 40% of Playwright MCP’s input under Claude Code and 87% under Codex, with about half its tool calls under both. Aside (Codex) made slightly fewer tool calls than Kitsune.</li>
+        <li>Kitsune’s Claude Code numbers are v0.8.3, run again alone on 2026-11-25. The rest are from 2026-11-20.</li>
+        <li>Models: claude-opus-5-5 and gpt-6.1-sol, one attempt per task (19 test, 7 dev). Input counts include cache and differ from billed cost. Grading has no LLM judge, so scores are not comparable to the WebArena-Pro paper’s.</li>
+        <li>Aside and EgoLite used the operator’s browsers; Playwright MCP and Kitsune ran an isolated Firefox.</li>
+      </ul>
+      <a class="text-link" href="docs/benchmark/">Read the results and methodology</a>
+    </div>
+  </section>
+
+  <section class="install" id="install" aria-labelledby="install-title">
+    <div class="wrap install-grid">
+      <div>
+        <h2 id="install-title">Install Kitsune</h2>
+        <ol class="steps">
+          <li><h3>Install the browser extension</h3><p><a class="text-link" href="docs/installation/#1-install-the-browser-extension">Add Kitsune to Firefox, Zen or LibreWolf</a> and keep the browser open.</p></li>
+          <li><h3>Register the MCP server</h3><p>Run the command in a terminal. Restart the clients you select, or type <code>/reload</code> in Pi.</p></li>
+        </ol>
+      </div>
+      <div class="console" translate="no">
+        <div class="console-panel">
+          <pre data-copy-source><code><a class="text-link" href="https://docs.astral.sh/uv/getting-started/installation/" title="Install uv (includes uvx)">uvx</a> kitsune-browser-mcp@latest setup</code></pre>
+          <button type="button" class="copy" data-act="copy"><svg class="icon icon-copy"><use href="#i-copy"/></svg><svg class="icon icon-done"><use href="#i-check"/></svg><span>Copy command</span></button>
+          <p class="console-note">Press Enter to use the detected clients, or Space to change the selection first. <a class="text-link" href="docs/installation/#2-register-the-mcp-server">Setup options</a></p>
+        </div>
+        <p class="trust">
+          Python runs locally without a sandbox; set <code>KITSUNE_SCRIPTING=0</code> to turn it off.
+          Approvals do not stop prompt injection, so use a separate browser profile for sensitive
+          accounts. <a class="text-link" href="docs/security/">Security guide</a>
+        </p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-row">
+    <a class="brand" href="./"><img src="assets/kitsune-icon.svg" alt="" width="24" height="24">Kitsune</a>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="docs/">Docs</a>
+      <a href="docs/faq/">FAQ</a>
+      <a href="docs/security/">Security</a>
+      <a href="https://github.com/junyeong-nero/kitsune">GitHub</a>
+      <a href="https://github.com/junyeong-nero/kitsune/releases">Releases</a>
+      <a href="https://pypi.org/project/kitsune-browser-mcp/">PyPI</a>
+    </nav>
+    <p class="footer-note">MIT License</p>
+  </div>
+</footer>
+</body>
+</html>
