@@ -17,7 +17,8 @@ so your normal profile needs no flags or WebDriver.
 ## Does it work with Chrome?
 
 Not yet. For Chrome, try a Chromium extension MCP such as
-[Browser MCP](https://github.com/BrowserMCP/mcp).
+[Browser MCP](https://github.com/BrowserMCP/mcp). See [Supported browsers](browsers.md) for
+the Firefox-based browsers Kitsune runs in.
 
 ## Which agents can use it?
 
