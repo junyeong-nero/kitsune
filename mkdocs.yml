@@ -70,6 +70,7 @@ nav:
   - Home: index.md
   - Getting started:
       - Installation: installation.md
+      - Supported browsers: browsers.md
       - Windows: windows.md
       - Try it: try-it.md
   - Concepts:

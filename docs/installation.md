@@ -1,6 +1,7 @@
 # Installation
 
-You'll need Firefox 142+, Zen 1.23+ or LibreWolf on macOS, Linux or [Windows](windows.md).
+You'll need Firefox 142+, Zen 1.23+ or LibreWolf on macOS, Linux or [Windows](windows.md)
+(other Firefox-based browsers: [Supported browsers](browsers.md)).
 Setup recognizes Claude Code, Codex CLI, Pi, Cursor, OpenCode and Claude Desktop (macOS or Windows).
 
 <a id="2-install-the-browser-extension"></a>
