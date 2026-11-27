@@ -76,7 +76,8 @@ hint with `reason: "sign_in"`. Two ways through:
 
 - **macOS**: install a backend (`uvx --from 'kitsune-browser-mcp[macos]' kitsune`, or
   `brew install cliclick`), grant Accessibility permission to the app running the bridge, then
-  run `kitsune-bridge stop` so the next start picks it up. The bridge uses the Python and `PATH`
+  run `kitsune-bridge stop` so the next start picks it up. Without it, the call fails with
+  `permission_required`, its `state.app` names the app to allow, and macOS shows its prompt once. The bridge uses the Python and `PATH`
   of whichever client started it, so add the extra to every client.
 - **Windows**: works without extra setup. `focus=True` finds the browser by window title; set
   `KITSUNE_BROWSER_WINDOW_TITLE` if yours differs.

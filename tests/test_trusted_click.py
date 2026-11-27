@@ -358,12 +358,40 @@ class NativeClickTests(unittest.TestCase):
     def test_macos_without_accessibility_does_not_click(self):
         quartz = fake_quartz()
         platform, trusted = self.mac(trusted=False)
+        app = {"name": "Ghostty", "path": "/Applications/Ghostty.app"}
         with platform, trusted, patch.dict("sys.modules", {"Quartz": quartz}), \
-             patch.object(bridge.subprocess, "run") as run:
+             patch.object(bridge.subprocess, "run") as run, \
+             patch.object(bridge, "_mac_accessibility_prompt") as prompt, \
+             patch.object(bridge, "_mac_responsible_app", return_value=app):
             result = bridge._native_click_screen(1, 2)
-        self.assertIn("Accessibility permission", result["error"])
+        self.assertIn("Accessibility permission for Ghostty (/Applications/Ghostty.app)", result["error"])
+        self.assertEqual((result["code"], result["retryable"]), ("permission_required", False))
+        self.assertEqual(result["state"], {"permission": "accessibility", "app": "Ghostty",
+                                           "app_path": "/Applications/Ghostty.app"})
+        self.assertIn("browser_ask_user", result["hint"])
+        prompt.assert_called_once_with()
         quartz.CGEventPost.assert_not_called()
         run.assert_not_called()
+
+    def test_accessibility_prompt_is_shown_once(self):
+        with patch.object(bridge, "_mac_accessibility_prompted", False), \
+             patch.object(bridge.ctypes.cdll, "LoadLibrary", side_effect=OSError("missing")) as load:
+            bridge._mac_accessibility_prompt()
+            bridge._mac_accessibility_prompt()
+        self.assertEqual(load.call_count, 1)
+
+    def test_responsible_app_is_the_outermost_bundle(self):
+        def pidpath(pid, buffer, size):
+            path = b"/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/x"
+            buffer.value = path
+            return len(path)
+        lib = SimpleNamespace(responsibility_get_pid_responsible_for_pid=Mock(return_value=7),
+                              proc_pidpath=Mock(side_effect=pidpath))
+        with patch.object(bridge.ctypes, "CDLL", return_value=lib):
+            self.assertEqual(bridge._mac_responsible_app(),
+                             {"name": "Visual Studio Code", "path": "/Applications/Visual Studio Code.app"})
+        with patch.object(bridge.ctypes, "CDLL", return_value=SimpleNamespace()):
+            self.assertIsNone(bridge._mac_responsible_app())
 
     def test_accessibility_check_uses_ax_is_process_trusted(self):
         lib = SimpleNamespace(AXIsProcessTrusted=Mock(return_value=0))
